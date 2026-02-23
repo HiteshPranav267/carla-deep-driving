@@ -253,8 +253,8 @@ def main():
         world.apply_settings(settings)
         
         # Entities
-        vehicles, bikes = spawn_traffic(client, world, tm, 100)
-        walkers, walker_controllers = spawn_pedestrians(client, world, 50)
+        vehicles, bikes = spawn_traffic(client, world, tm, 300)
+        walkers, walker_controllers = spawn_pedestrians(client, world, 150)
         
         stuck_tracker = {}
 
