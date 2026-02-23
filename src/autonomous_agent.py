@@ -6,10 +6,15 @@ import torch
 from torchvision import transforms
 from PIL import Image
 
+import os
 from model import EndToEndDrivingModel
 
 class AutonomousAgent:
-    def __init__(self, model_path="best_model.pth"):
+    def __init__(self, model_path=None):
+        if model_path is None:
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            model_path = os.path.join(project_root, "models", "best_model.pth")
+            
         pygame.init()
         pygame.font.init()
         self.display = pygame.display.set_mode((800, 600))
@@ -28,7 +33,7 @@ class AutonomousAgent:
         try:
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))
         except FileNotFoundError:
-            print("WARNING: best_model.pth not found. The agent will drive randomly!")
+            print(f"WARNING: {model_path} not found. The agent will drive randomly!")
         self.model.eval()
         
         self.transform = transforms.Compose([
@@ -41,11 +46,19 @@ class AutonomousAgent:
         self.setup_ego_vehicle()
         self.setup_camera()
         
-    def setup_ego_vehicle(self):
         blueprint = self.world.get_blueprint_library().find("vehicle.tesla.model3")
-        spawn_point = self.world.get_map().get_spawn_points()[10] # pick random
+        spawn_points = self.world.get_map().get_spawn_points()
+        np.random.shuffle(spawn_points)
         
-        self.ego_vehicle = self.world.spawn_actor(blueprint, spawn_point)
+        self.ego_vehicle = None
+        for sp in spawn_points:
+            self.ego_vehicle = self.world.try_spawn_actor(blueprint, sp)
+            if self.ego_vehicle:
+                break
+        
+        if not self.ego_vehicle:
+            raise RuntimeError("Could not spawn Test vehicle!")
+            
         # NO AUTOPILOT. WE DRIVE THIS OURSELVES LITERALLY END-TO-END.
         print("Spawned Autonomous Test Ego Vehicle. AI Taking Control.")
 
@@ -85,8 +98,9 @@ class AutonomousAgent:
                     img_tensor = self.transform(img_pil).unsqueeze(0).to(self.device)
                     
                     v = self.ego_vehicle.get_velocity()
-                    speed = 3.6 * np.sqrt(v.x**2 + v.y**2 + v.z**2)
-                    speed_tensor = torch.tensor([[speed]], dtype=torch.float32).to(self.device)
+                    speed_kmh = 3.6 * np.sqrt(v.x**2 + v.y**2 + v.z**2)
+                    speed_normalized = speed_kmh / 100.0
+                    speed_tensor = torch.tensor([[speed_normalized]], dtype=torch.float32).to(self.device)
                     
                     # 2. Run DL inference
                     with torch.no_grad():
@@ -105,7 +119,7 @@ class AutonomousAgent:
                     
                     # Dashboard HUD
                     text_title = self.font.render("FULLY NEURAL MODEL DRIVING", True, (0, 255, 0))
-                    text_speed = self.font.render(f"Speed: {speed:.1f} km/h", True, (255, 255, 255))
+                    text_speed = self.font.render(f"Speed: {speed_kmh:.1f} km/h", True, (255, 255, 255))
                     text_steer = self.font.render(f"Net Steer: {steer:.2f}", True, (255, 255, 255))
                     text_throttle = self.font.render(f"Net Throttle: {throttle:.2f}", True, (255, 255, 255))
                     text_brake = self.font.render(f"Net Brake: {brake:.2f}", True, (255, 255, 255))
