@@ -225,14 +225,22 @@ def manage_chaos(world, tm, vehicles, bikes, stuck_tracker):
             
 
 def main():
-    client = carla.Client('localhost', 2000)
-    client.set_timeout(10.0)
-
+    client = None # Initialize client to None for finally block
+    world = None  # Initialize world to None for finally block
+    settings = None # Initialize settings to None for finally block
+    vehicles = None # Initialize vehicles to None for finally block
+    bikes = None # Initialize bikes to None for finally block
+    walkers = None # Initialize walkers to None for finally block
+    walker_controllers = None # Initialize walker_controllers to None for finally block
+    
     try:
+        client = carla.Client('localhost', 2000)
+        client.set_timeout(20.0) # Increased timeout
         world = client.get_world()
         
-        # Load town with high complexity like Town03 or Town05
-        # world = client.load_world("Town03")
+        # Load town with high complexity like Town03 (Matches Training Data)
+        print("Loading Town03...")
+        world = client.load_world("Town03")
         
         tm = client.get_trafficmanager(8000)
         tm.set_global_distance_to_leading_vehicle(0.5)
@@ -263,15 +271,21 @@ def main():
 
     except KeyboardInterrupt:
         print("Cleaning up...")
+    except Exception as e:
+        print(f"Error: {e}")
     finally:
-        # Restore settings
-        settings = world.get_settings()
-        settings.synchronous_mode = False
-        world.apply_settings(settings)
+        if world is not None:
+            settings = world.get_settings()
+            settings.synchronous_mode = False
+            world.apply_settings(settings)
         
-        client.apply_batch([carla.command.DestroyActor(x) for x in vehicles])
-        client.apply_batch([carla.command.DestroyActor(x) for x in walkers])
-        client.apply_batch([carla.command.DestroyActor(x) for x in walker_controllers])
+        if client is not None:
+            if 'vehicles' in locals() and vehicles:
+                client.apply_batch([carla.command.DestroyActor(x) for x in vehicles])
+            if 'walkers' in locals() and walkers:
+                client.apply_batch([carla.command.DestroyActor(x) for x in walkers])
+            if 'walker_controllers' in locals() and walker_controllers:
+                client.apply_batch([carla.command.DestroyActor(x) for x in walker_controllers])
         time.sleep(0.5)
 
 if __name__ == '__main__':
