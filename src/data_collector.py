@@ -9,10 +9,10 @@ import math
 import random
 
 # Import the Indian Chaos generation functions
-from indian_traffic_manager import spawn_traffic, spawn_static_obstacles, spawn_pedestrians, manage_chaos
+from indian_traffic_manager import spawn_traffic, spawn_static_obstacles, spawn_pedestrians, manage_chaos, apply_random_weather
 
 class AutomatedDataCollector:
-    def __init__(self, target_frames_per_town=10000, towns=["Town03", "Town04"]):
+    def __init__(self, target_frames_per_town=5000, towns=["Town01", "Town02", "Town03", "Town04", "Town05", "Town10HD_Opt"]):
         self.target_frames = target_frames_per_town
         self.towns = towns
         
@@ -83,14 +83,19 @@ class AutomatedDataCollector:
         
         print(f"Starting chaos generation in {town_name}...")
         
-        vehicles, bikes = spawn_traffic(self.client, self.world, self.tm, 100)
-        walkers, walker_controllers = spawn_pedestrians(self.client, self.world, 50)
-        stuck_tracker = {}
+        # Unit 2: Data Augmentation - Random Weather
+        apply_random_weather(self.world)
         
-        # 5. Spawn Ego Vehicle
+        # SPAWN EGO VEHICLE FIRST to guarantee it gets a spawn point
         self.setup_ego_vehicle()
         self.setup_camera()
         self.setup_collision_sensor()
+        self.setup_obstacle_sensor()
+        
+        # Spawn NPC traffic AFTER ego vehicle
+        vehicles, bikes = spawn_traffic(self.client, self.world, self.tm, 200)
+        walkers, walker_controllers = spawn_pedestrians(self.client, self.world, 80)
+        stuck_tracker = {}
         
         # Wait for camera to send first frame
         print("Waiting for camera sensor...")
@@ -121,10 +126,20 @@ class AutomatedDataCollector:
                 if self.surface is not None and self.image is not None:
                     # Rendering
                     self.display.blit(self.surface, (0, 0))
-                    
+                    # Safety: check if ego vehicle is still alive
+                    if not self.ego_vehicle.is_alive:
+                        print("Ego vehicle was destroyed by physics. Breaking.")
+                        break
+                        
                     v = self.ego_vehicle.get_velocity()
                     speed = 3.6 * np.sqrt(v.x**2 + v.y**2 + v.z**2)
                     c = self.ego_vehicle.get_control()
+                    
+                    # Rule-based safety: emergency brake if obstacle too close
+                    if self.obstacle_dist < 4.5:
+                        c.throttle = 0.0
+                        c.brake = 1.0
+                        self.ego_vehicle.apply_control(c)
                     t = self.ego_vehicle.get_transform()
                     rot = t.rotation
                     
@@ -188,13 +203,18 @@ class AutomatedDataCollector:
             settings.synchronous_mode = False
             self.world.apply_settings(settings)
             
-            self.camera.destroy()
-            self.collision_sensor.destroy()
-            self.ego_vehicle.destroy()
+            try:
+                if self.camera and self.camera.is_alive: self.camera.destroy()
+                if self.collision_sensor and self.collision_sensor.is_alive: self.collision_sensor.destroy()
+                if hasattr(self, 'obstacle_sensor') and self.obstacle_sensor and self.obstacle_sensor.is_alive: self.obstacle_sensor.destroy()
+                if self.ego_vehicle and self.ego_vehicle.is_alive: self.ego_vehicle.destroy()
+            except: pass
             
-            self.client.apply_batch([carla.command.DestroyActor(x) for x in vehicles])
-            self.client.apply_batch([carla.command.DestroyActor(x) for x in walkers])
-            self.client.apply_batch([carla.command.DestroyActor(x) for x in walker_controllers])
+            try:
+                self.client.apply_batch([carla.command.DestroyActor(x) for x in vehicles])
+                self.client.apply_batch([carla.command.DestroyActor(x) for x in walkers])
+                self.client.apply_batch([carla.command.DestroyActor(x) for x in walker_controllers])
+            except: pass
             
             time.sleep(2) # Give CARLA a moment before loading next town
 
@@ -216,11 +236,11 @@ class AutomatedDataCollector:
         # Ego autopilot is aggressive
         self.ego_vehicle.set_autopilot(True, self.tm.get_port())
         
-        # Override safety for Ego to ensure it NEVER crashes for data quality
-        self.tm.distance_to_leading_vehicle(self.ego_vehicle, 4.0)
+        # Ego drives confidently but safely — never causes collisions
+        self.tm.distance_to_leading_vehicle(self.ego_vehicle, 3.0)
         self.tm.ignore_vehicles_percentage(self.ego_vehicle, 0.0)
         self.tm.ignore_lights_percentage(self.ego_vehicle, 0.0)
-        self.tm.vehicle_percentage_speed_difference(self.ego_vehicle, -20) # Drive slightly slower for better safety 
+        self.tm.vehicle_percentage_speed_difference(self.ego_vehicle, -10)
 
     def setup_camera(self):
         bp = self.world.get_blueprint_library().find("sensor.camera.rgb")
@@ -243,12 +263,22 @@ class AutomatedDataCollector:
         self.collision_sensor = self.world.spawn_actor(bp, carla.Transform(), attach_to=self.ego_vehicle)
         self.collision_sensor.listen(lambda event: self._on_collision(event))
 
+    def setup_obstacle_sensor(self):
+        self.obstacle_dist = 50.0
+        bp = self.world.get_blueprint_library().find("sensor.other.obstacle")
+        bp.set_attribute('distance', '15')
+        bp.set_attribute('hit_radius', '0.4')
+        transform = carla.Transform(carla.Location(x=2.2, z=1.0))
+        self.obstacle_sensor = self.world.spawn_actor(bp, transform, attach_to=self.ego_vehicle)
+        self.obstacle_sensor.listen(self._on_obstacle)
+
+    def _on_obstacle(self, event):
+        self.obstacle_dist = event.distance
+
     def _on_collision(self, event):
         self.collision_count += 1
         print(f"Collision {self.collision_count} detected with {event.other_actor.type_id}")
 
 if __name__ == "__main__":
-    # You can specify exact towns and frames here
-    # E.g. 10000 frames each for Town03 and Town04
-    collector = AutomatedDataCollector(target_frames_per_town=10000, towns=["Town03", "Town04"])
+    collector = AutomatedDataCollector(target_frames_per_town=5000)
     collector.run_collection()

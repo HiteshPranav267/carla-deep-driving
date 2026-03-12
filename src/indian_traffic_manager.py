@@ -4,6 +4,19 @@ import time
 import math
 import logging
 
+def apply_random_weather(world):
+    """Unit 2: Data Augmentation - Randomly change weather each town."""
+    presets = [
+        carla.WeatherParameters.ClearNoon,
+        carla.WeatherParameters.CloudyNoon,
+        carla.WeatherParameters.WetNoon,
+        carla.WeatherParameters.SoftRainNoon,
+        carla.WeatherParameters.ClearSunset,
+    ]
+    weather = random.choice(presets)
+    world.set_weather(weather)
+    print(f"🌦️ Weather Augmentation Applied")
+
 def spawn_pedestrians(client, world, num_walkers):
     blueprintsWalkers = world.get_blueprint_library().filter("walker.pedestrian.*")
     spawn_points = []
