@@ -61,8 +61,8 @@ class CNNLSTM(nn.Module):
         self.resnet = models.resnet18(pretrained=True)
         self.resnet.fc = nn.Identity()  # Remove final classification layer
 
-        # Batch normalization after fusion
-        self.bn = nn.BatchNorm1d(512 + 64)
+        # Batch normalization after fusion (LSTM out 256 + speed 64)
+        self.bn = nn.BatchNorm1d(256 + 64)
 
         # Speed processing MLP
         self.speed_fc = nn.Sequential(
