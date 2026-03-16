@@ -2,304 +2,141 @@ import carla
 import random
 import time
 import math
-import logging
 
-def apply_random_weather(world):
-    """Unit 2: Data Augmentation - Randomly change weather each town."""
-    presets = [
-        carla.WeatherParameters.ClearNoon,
-        carla.WeatherParameters.CloudyNoon,
-        carla.WeatherParameters.WetNoon,
-        carla.WeatherParameters.SoftRainNoon,
-        carla.WeatherParameters.ClearSunset,
-    ]
-    weather = random.choice(presets)
-    world.set_weather(weather)
-    print(f"🌦️ Weather Augmentation Applied")
+class IndianTrafficManager:
+    def __init__(self, client):
+        self.client = client
+        self.world = client.get_world()
+        self.tm = client.get_trafficmanager(8000)
+        self.spawned_vehicles = []
+        self.spawned_walkers = []
+        self.walker_controllers = []
 
-def spawn_pedestrians(client, world, num_walkers):
-    blueprintsWalkers = world.get_blueprint_library().filter("walker.pedestrian.*")
-    spawn_points = []
-    
-    for _ in range(num_walkers):
-        spawn_point = carla.Transform()
-        loc = world.get_random_location_from_navigation()
-        if (loc != None):
-            spawn_point.location = loc
-            spawn_points.append(spawn_point)
+        # Configure Traffic Manager for "Indian Style"
+        self.tm.set_synchronous_mode(True)
+        # 1.5m - 2.0m is "Dense" but "Safe" for CARLA physics
+        self.tm.set_global_distance_to_leading_vehicle(2.0)
+        # Enable hybrid mode for performance with many actors
+        self.tm.set_hybrid_physics_mode(True)
+        self.tm.set_hybrid_physics_radius(70.0)
 
-    batch = []
-    walker_speed = []
-    
-    for spawn_point in spawn_points:
-        walker_bp = random.choice(blueprintsWalkers)
-        # make invincible
-        if walker_bp.has_attribute('is_invincible'):
-            walker_bp.set_attribute('is_invincible', 'false')
+    def spawn_traffic(self, num_vehicles=100):
+        blueprint_library = self.world.get_blueprint_library()
+        blueprints = blueprint_library.filter('vehicle.*')
         
-        # speed
-        if walker_bp.has_attribute('speed'):
-            if (random.random() > 0.5):
-                walker_speed.append(walker_bp.get_attribute('speed').recommended_values[1]) # walk
-            else:
-                walker_speed.append(walker_bp.get_attribute('speed').recommended_values[2]) # run
-        else:
-            walker_speed.append(0.0)
+        # Exclude huge trucks/trailers for more fluid "Indian" traffic
+        blueprints = [x for x in blueprints if int(x.get_attribute('number_of_wheels')) >= 2 and 'firetruck' not in x.id and 'ambulance' not in x.id]
+        
+        spawn_points = self.world.get_map().get_spawn_points()
+        random.shuffle(spawn_points)
+
+        count = 0
+        for n, transform in enumerate(spawn_points):
+            if count >= num_vehicles:
+                break
             
-        batch.append(carla.command.SpawnActor(walker_bp, spawn_point))
-        
-    results = client.apply_batch_sync(batch, True)
-    
-    walker_ids = []
-    speeds = []
-    for i, res in enumerate(results):
-        if not res.error:
-            walker_ids.append(res.actor_id)
-            speeds.append(walker_speed[i])
-
-    # AI controllers
-    batch = []
-    walker_controller_bp = world.get_blueprint_library().find('controller.ai.walker')
-    for walker_id in walker_ids:
-        batch.append(carla.command.SpawnActor(walker_controller_bp, carla.Transform(), walker_id))
-        
-    results = client.apply_batch_sync(batch, True)
-    controller_ids = []
-    for res in results:
-        if not res.error:
-            controller_ids.append(res.actor_id)
-
-    world.tick()
-
-    all_actors = world.get_actors(controller_ids)
-    
-    # 30% of pedestrians will blindly cross roads
-    world.set_pedestrians_cross_factor(30.0)
-    
-    for i, controller in enumerate(all_actors):
-        controller.start()
-        controller.go_to_location(world.get_random_location_from_navigation())
-        controller.set_max_speed(float(speeds[i]))
-        
-    print(f"Spawned {len(walker_ids)} pedestrians.")
-    return walker_ids, controller_ids
-
-
-def spawn_traffic(client, world, tm, num_vehicles):
-    vehicle_bps = world.get_blueprint_library().filter("vehicle.*")
-    safe_bps = [x for x in vehicle_bps if int(x.get_attribute('number_of_wheels')) >= 2]
-    
-    bikes = [bp for bp in safe_bps if int(bp.get_attribute('number_of_wheels')) == 2]
-    cars = [bp for bp in safe_bps if int(bp.get_attribute('number_of_wheels')) > 2]
-    
-    spawn_points = world.get_map().get_spawn_points()
-    random.shuffle(spawn_points)
-    
-    vehicles = []
-    bike_actors = []
-    
-    batch = []
-    for i, sp in enumerate(spawn_points[:num_vehicles]):
-        # 40% bikes, 60% cars
-        bp = random.choice(bikes) if random.random() < 0.4 else random.choice(cars)
-        
-        batch.append(carla.command.SpawnActor(bp, sp).then(
-            carla.command.SetAutopilot(carla.command.FutureActor, True, tm.get_port())
-        ))
-
-    results = client.apply_batch_sync(batch, True)
-    
-    for res in results:
-        if not res.error:
-            v = world.get_actor(res.actor_id)
-            vehicles.append(v)
-            if v.attributes.get('number_of_wheels') == '2':
-                bike_actors.append(v)
+            bp = random.choice(blueprints)
+            if bp.has_attribute('color'):
+                color = random.choice(bp.get_attribute('color').recommended_values)
+                bp.set_attribute('color', color)
             
-            # --- INDIAN TRAFFIC BEHAVIOR PARAMETERS ---
-            # 1. Very close distance to leading vehicle (gap exploitation)
-            tm.distance_to_leading_vehicle(v, random.uniform(0.1, 1.0))
-            # 2. Low random lane changing to keep them on road waypoints
-            tm.random_left_lanechange_percentage(v, 10)
-            tm.random_right_lanechange_percentage(v, 10)
-            # 3. Respect signals as requested
-            tm.ignore_lights_percentage(v, 0)
-            tm.ignore_signs_percentage(v, 0)
-            # 4. Global Safety - Hard Brake if needed
-            tm.ignore_vehicles_percentage(v, 2.0) # Only 2% chance to nudge
-            tm.distance_to_leading_vehicle(v, 3.0) 
-            # 5. Speed variance
-            tm.vehicle_percentage_speed_difference(v, random.uniform(-15, 5))
-
-
-    print(f"Spawned {len(vehicles)} vehicles (Bikes: {len(bike_actors)})")
-    return vehicles, bike_actors
-
-def spawn_static_obstacles(world, num_clusters):
-    props = world.get_blueprint_library().filter("static.prop.*")
-    debris_props = [p for p in props if "trash" in p.id or "box" in p.id or "barrel" in p.id or "barrier" in p.id]
-    if not debris_props:
-        return []
-    
-    waypoints = world.get_map().generate_waypoints(20.0)
-    random.shuffle(waypoints)
-    
-    obstacles = []
-    # Only use a fraction of waypoints to create distinct "piles"
-    for wp in waypoints[:num_clusters]:
-        # 1. Determine road side (shift 6.5m to be safely on the sidewalk/verge)
-        right_vec = wp.transform.get_right_vector()
-        base_loc = wp.transform.location + carla.Location(x=right_vec.x * 6.5, y=right_vec.y * 6.5, z=0.2)
-        
-        # 2. Spawn 3-5 items in a cluster
-        for _ in range(random.randint(3, 5)):
-            # Random offset within the pile
-            offset = carla.Location(x=random.uniform(-0.8, 0.8), y=random.uniform(-0.8, 0.8), z=0.1)
-            spawn_loc = base_loc + offset
-            spawn_rot = carla.Rotation(yaw=random.uniform(0, 360))
-            
-            bp = random.choice(debris_props)
-            obs = world.try_spawn_actor(bp, carla.Transform(spawn_loc, spawn_rot))
-            if obs:
-                obstacles.append(obs)
-            
-    print(f"Spawned {len(obstacles)} items in {num_clusters} roadside piles.")
-    return obstacles
-
-
-def manage_chaos(world, tm, vehicles, bikes, stuck_tracker):
-    """
-    Called every few ticks to enforce Indian traffic heuristics:
-    1. Gridlock resolution (Clean cleanup, no more reversing)
-    2. Center-lane riding for bikes
-    3. Sudden bizarre braking (Occasional)
-    """
-    map = world.get_map()
-    now = time.time()
-    
-    for v in vehicles:
-        if not v.is_alive:
-            continue
-            
-        # --- FIX: Periodically reset speed diff to prevent permanent "Brake" stuckness ---
-        if random.random() < 0.02:
-            tm.vehicle_percentage_speed_difference(v, random.uniform(-20, 10))
-
-        vel = v.get_velocity()
-        speed = math.sqrt(vel.x**2 + vel.y**2)
-        
-        # Simple Anti-Gridlock: Just destroy if blocked too long
-        if speed < 0.1:
-            if v.id not in stuck_tracker:
-                stuck_tracker[v.id] = now
-            elif now - stuck_tracker[v.id] > 30.0:  # 30s threshold
-                print(f"Vehicle {v.id} timed out. Destroying to clear road.")
-                v.destroy()
-                stuck_tracker.pop(v.id)
-        else:
-            if v.id in stuck_tracker:
-                stuck_tracker.pop(v.id)
+            vehicle = self.world.try_spawn_actor(bp, transform)
+            if vehicle:
+                vehicle.set_autopilot(True, self.tm.get_port())
                 
-    # 2. Bike center line riding (weaving)
-    for bike in bikes:
-        if not bike.is_alive:
-            continue
-        # 10% chance to force it to weave to the lane marker
-        if random.random() < 0.05:
-            wp = map.get_waypoint(bike.get_location())
-            if wp:
-                # shift to right edge of lane to simulate squeezing between lanes
-                right_v = wp.transform.get_right_vector()
-                loc = wp.transform.location + carla.Location(x=right_v.x*1.5, y=right_v.y*1.5)
-                # Apply a slight steering offset via control (more natural than set_transform)
-                # Since tm overrides steering, we tell TM to change lane right immediately
-                tm.force_lane_change(bike, True)
-
-    # 3. Wrong side driving
-    for v in vehicles:
-        if not v.is_alive:
-            continue
-        vel = v.get_velocity()
-        speed = math.sqrt(vel.x**2 + vel.y**2)
-        
-        # If speed is low, 2% chance to switch to opposite lane to overtake
-        if speed < 1.0 and random.random() < 0.02:
-            wp = map.get_waypoint(v.get_location())
-            if wp and wp.get_left_lane():
-                tm.force_lane_change(v, False) # force left lane change
+                # --- UNIQUE INDIAN BEHAVIOR SETTINGS ---
                 
-    # 4. Sudden braking
-    for v in vehicles:
-        if not v.is_alive: continue
-        if random.random() < 0.005: 
-            # Force severe brake in Traffic Manager
-            tm.vehicle_percentage_speed_difference(v, 100) # Stop
-            stuck_tracker[v.id] = now  # Use simple timestamp
-            
+                # 1. Lane Indiscipline (Lane Offset)
+                # This makes vehicles drive slightly off-center, simulating "squeezing" and lane sharing
+                offset = random.uniform(-0.8, 0.8) 
+                self.tm.vehicle_lane_offset(vehicle, offset)
+                
+                # 2. Speed Variance
+                # Some drivers are slow (rickshaw-style), some are fast
+                speed_diff = random.uniform(-30, 10) 
+                self.tm.vehicle_percentage_speed_difference(vehicle, speed_diff)
+                
+                # 3. Aggressive Overtaking
+                self.tm.auto_lane_change(vehicle, True)
+                self.tm.random_left_lanechange_percentage(vehicle, 40)
+                self.tm.random_right_lanechange_percentage(vehicle, 40)
+                
+                # 4. Tailgating (but safe)
+                self.tm.distance_to_leading_vehicle(vehicle, random.uniform(1.5, 3.0))
+                
+                # 5. Occasional Traffic Rule "Fluidity" (very low percentage to avoid "dumb" crashes)
+                self.tm.ignore_lights_percentage(vehicle, 5) # 5% chance to jump yellow/red
+                self.tm.ignore_signs_percentage(vehicle, 5)
+
+                self.spawned_vehicles.append(vehicle)
+                count += 1
+
+        print(f"Spawned {len(self.spawned_vehicles)} vehicles with Indian behavior.")
+
+    def spawn_pedestrians(self, num_walkers=50):
+        blueprints = self.world.get_blueprint_library().filter('walker.pedestrian.*')
+        walker_controller_bp = self.world.get_blueprint_library().find('controller.ai.walker')
+
+        for i in range(num_walkers):
+            # 1. Get random location on sidewalks
+            loc = self.world.get_random_location_from_navigation()
+            if loc:
+                sp = carla.Transform(loc)
+                bp = random.choice(blueprints)
+                
+                walker = self.world.try_spawn_actor(bp, sp)
+                if walker:
+                    self.spawned_walkers.append(walker)
+                    
+                    controller = self.world.try_spawn_actor(walker_controller_bp, carla.Transform(), walker)
+                    if controller:
+                        self.walker_controllers.append(controller)
+                        controller.start()
+                        controller.go_to_location(self.world.get_random_location_from_navigation())
+                        controller.set_max_speed(1.0 + random.random()) # Human walking speed
+
+        print(f"Spawned {len(self.spawned_walkers)} pedestrians.")
+
+    def cleanup(self):
+        print("Cleaning up Indian Traffic...")
+        for controller in self.walker_controllers:
+            controller.stop()
+        
+        all_actors = self.spawned_vehicles + self.spawned_walkers + self.walker_controllers
+        for actor in all_actors:
+            if actor.is_alive:
+                actor.destroy()
+        print("Cleanup complete.")
 
 def main():
-    client = None # Initialize client to None for finally block
-    world = None  # Initialize world to None for finally block
-    settings = None # Initialize settings to None for finally block
-    vehicles = None # Initialize vehicles to None for finally block
-    bikes = None # Initialize bikes to None for finally block
-    walkers = None # Initialize walkers to None for finally block
-    walker_controllers = None # Initialize walker_controllers to None for finally block
-    
     try:
         client = carla.Client('localhost', 2000)
-        client.set_timeout(20.0) # Increased timeout
+        client.set_timeout(10.0)
         world = client.get_world()
         
-        # Load town with high complexity like Town03 (Matches Training Data)
-        print("Loading Town03...")
-        world = client.load_world("Town03")
-        
-        tm = client.get_trafficmanager(8000)
-        tm.set_global_distance_to_leading_vehicle(0.5)
-        tm.set_hybrid_physics_mode(False)
-        tm.set_synchronous_mode(True)
-        
+        # Ensure synchronous mode for clean physics
         settings = world.get_settings()
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = 0.05
         world.apply_settings(settings)
-        
-        # Entities
-        vehicles, bikes = spawn_traffic(client, world, tm, 300)
-        walkers, walker_controllers = spawn_pedestrians(client, world, 150)
-        
-        stuck_tracker = {}
 
-        print("🚦 Indian Traffic Chaos Simulation Running... 🚦")
-        
+        manager = IndianTrafficManager(client)
+        manager.spawn_traffic(120) # Dense but manageable
+        manager.spawn_pedestrians(60)
+
+        print("🚦 Indian Traffic Simulator Active (Lane Sharing + Varied Speeds) 🚦")
+        print("Press Ctrl+C to stop.")
+
         while True:
             world.tick()
-            manage_chaos(world, tm, vehicles, bikes, stuck_tracker)
             
-            # Reset random sudden brakers to normal speed randomly
-            for v in vehicles:
-                if v.is_alive and random.random() < 0.01:
-                    tm.vehicle_percentage_speed_difference(v, random.uniform(-15, 5))
-
     except KeyboardInterrupt:
-        print("Cleaning up...")
-    except Exception as e:
-        print(f"Error: {e}")
+        pass
     finally:
-        if world is not None:
-            settings = world.get_settings()
-            settings.synchronous_mode = False
-            world.apply_settings(settings)
-        
-        if client is not None:
-            if 'vehicles' in locals() and vehicles:
-                client.apply_batch([carla.command.DestroyActor(x) for x in vehicles])
-            if 'walkers' in locals() and walkers:
-                client.apply_batch([carla.command.DestroyActor(x) for x in walkers])
-            if 'walker_controllers' in locals() and walker_controllers:
-                client.apply_batch([carla.command.DestroyActor(x) for x in walker_controllers])
-        time.sleep(0.5)
+        manager.cleanup()
+        settings = world.get_settings()
+        settings.synchronous_mode = False
+        world.apply_settings(settings)
 
 if __name__ == '__main__':
     main()

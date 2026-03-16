@@ -1,0 +1,30 @@
+# CARLA Deep Learning Research Requirements
+torch>=2.1.0
+torchvision>=0.16.0
+carla>=0.9.13
+opencv-python>=4.8.0
+pygame>=2.5.2
+numpy>=1.24.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+Pillow>=10.0.0
+scikit-learn>=1.3.0
+sciPy>=1.10.0
+jupyter>=1.0.0
+
+# Compatible pytorch-grad-cam version for Python 3.12
+# Using a more recent version that should work better with Python 3.12
+# If issues persist, try: pip install git+https://github.com/jacobgil/pytorch-grad-cam.git
+# Or use the alternative implementation below
+
+# Alternative: Use the official GradCAM implementation from torchvision
+# This avoids the external dependency entirely
+torchvision>=0.16.0  # Already included, provides GradCAM
+
+# Optional: If you need the advanced features from pytorch-grad-cam
+# Try this more specific version:
+pkgconfig>=1.5.5
+pyyaml>=6.0
+
+# For visualization
+# matplotlib already included above

@@ -405,8 +405,53 @@ class GTAPilot:
     # ══════════════════════════════════════════════════════════════
     #  PHASE 2: DRIVING TO DESTINATION
     # ══════════════════════════════════════════════════════════════
+    def _get_next_route_target(self, ego_loc, speed_kmh):
+        """Find the next target point along the planned route with dynamic lookahead."""
+        # Increased lookahead (minimum 12m) for smoother lane merges and approaches
+        lookahead = max(12.0, min(25.0, speed_kmh * 0.8))
+        
+        while self._route_index < len(self.route) - 1:
+            rx, ry = self.route[self._route_index]
+            d = math.sqrt((ego_loc.x - rx)**2 + (ego_loc.y - ry)**2)
+            if d < lookahead:
+                self._route_index += 1
+            else:
+                break
+        
+        idx = min(self._route_index, len(self.route) - 1)
+        rx, ry = self.route[idx]
+        return carla.Location(x=rx, y=ry, z=0.5)
+
+    def _compute_steer_to_target(self, target_loc, speed_kmh):
+        """Compute steering angle with speed-sensitive gain for stability."""
+        t = self.vehicle.get_transform()
+        ego_loc = t.location
+        fwd = t.get_forward_vector()
+
+        # Vector from ego to target
+        dx = target_loc.x - ego_loc.x
+        dy = target_loc.y - ego_loc.y
+        dist = math.sqrt(dx**2 + dy**2)
+        if dist < 0.5:
+            return 0.0
+
+        # Normalize target direction
+        dx /= dist
+        dy /= dist
+
+        # Cross product (fwd.x * dir.y - fwd.y * dir.x)
+        # Positive = target is to the RIGHT
+        cross = fwd.x * dy - fwd.y * dx
+        
+        # Speed-sensitive gain: lower gain at high speeds to prevent wobbling
+        # gain of 1.8 at low speed, drops to ~0.8 at high speed
+        gain = 1.8 if speed_kmh < 10 else max(0.8, 1.8 - (speed_kmh / 40.0))
+        
+        steer = cross * gain
+        return max(-1.0, min(1.0, steer))
+
     def driving_phase(self, destination_wp):
-        """Drive to the selected destination using Autopilot + Neural Safety."""
+        """Drive to the selected destination using waypoint-following controller."""
         self.destination_wp = destination_wp
         
         # Resizable driving window
@@ -418,14 +463,20 @@ class GTAPilot:
         self._setup_obstacle_sensor()
         self._setup_collision_sensor()
         
-        # Compute planned route for visualization
+        # Compute planned route for visualization AND for path-following
         self.route = self._compute_route(self.vehicle.get_transform().location, destination_wp.transform.location)
         
-        # TM gets confused if points are too dense (loops). Downsample the path (e.g. every 8th point = ~16m apart)
-        # This forces the TM to follow OUR smart route logic, but gives it enough breathing room between points.
-        self.current_tm_path = [carla.Location(x=p[0], y=p[1], z=0.5) for p in self.route[::8]]
-        if self.route: # Ensure the final destination is always the very last point
-            self.current_tm_path.append(carla.Location(x=self.route[-1][0], y=self.route[-1][1], z=0.5))
+        # ─── SMART START: Find closest index on route ───
+        self._route_index = 0
+        if self.route:
+            ego_loc = self.vehicle.get_transform().location
+            min_dist = float('inf')
+            for i, p in enumerate(self.route[:20]): # Check first 20 points
+                d = math.sqrt((ego_loc.x - p[0])**2 + (ego_loc.y - p[1])**2)
+                if d < min_dist:
+                    min_dist = d
+                    self._route_index = i
+            print(f"   Route tracking started at index {self._route_index}")
             
         self.breadcrumb_trail = []
         self._breadcrumb_counter = 0
@@ -437,18 +488,11 @@ class GTAPilot:
             self.world.tick()
             time.sleep(0.1)
 
-        # Use CARLA Autopilot with safety tuning
-        self.vehicle.set_autopilot(True, self.tm.get_port())
-        self.tm.ignore_lights_percentage(self.vehicle, 0.0)
-        self.tm.ignore_vehicles_percentage(self.vehicle, 0.0)
-        self.tm.distance_to_leading_vehicle(self.vehicle, 5.0)
-        self.tm.vehicle_percentage_speed_difference(self.vehicle, 10)
-        self.tm.auto_lane_change(self.vehicle, True)
+        # Disable autopilot — we drive manually along the route
+        self.vehicle.set_autopilot(False)
         
-        # Set destination via Traffic Manager using the spaced-out smart route
-        self.tm.set_path(self.vehicle, self.current_tm_path)
         dest_loc = destination_wp.transform.location
-        print(f"Navigating to exact path ({len(self.current_tm_path)} anchors) — route preview has {len(self.route)} pts")
+        print(f"Navigating along planned route ({len(self.route)} waypoints)")
         
         clock = pygame.time.Clock()
         self.stuck_timer = 0
@@ -474,18 +518,20 @@ class GTAPilot:
 
                 v = self.vehicle.get_velocity()
                 speed_kmh = 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
-                ctrl = self.vehicle.get_control()
                 
                 # Neural Network inference (shadow mode)
                 raw_thr, raw_steer, raw_brake = self._run_inference(speed_kmh)
                 
-                safety_status = "AUTOPILOT"
+                safety_status = "FOLLOWING ROUTE"
                 
                 # ─── STUCK / CRASH RECOVERY ───
                 at_traffic_light = False
                 try:
                     at_traffic_light = self.vehicle.is_at_traffic_light()
                 except: pass
+                
+                ego_loc = self.vehicle.get_transform().location
+                dist_to_dest = ego_loc.distance(self.destination_wp.transform.location)
                 
                 if self.recovering:
                     elapsed = time.time() - self.recover_start
@@ -501,11 +547,43 @@ class GTAPilot:
                     else:
                         self.recovering = False
                         self.stuck_timer = 0
-                        self.vehicle.set_autopilot(True, self.tm.get_port())
-                        self.tm.set_path(self.vehicle, [self.destination_wp.transform.location])
                         safety_status = "RECOVERED"
-                        print("   RECOVERED - resuming autopilot")
+                        print("   RECOVERED - resuming route following")
                 else:
+                    # ─── WAYPOINT-FOLLOWING CONTROLLER ───
+                    target_loc = self._get_next_route_target(ego_loc, speed_kmh)
+                    steer = self._compute_steer_to_target(target_loc, speed_kmh)
+                    
+                    # Speed controller: slow down for sharp turns, speed up on straights
+                    abs_steer = abs(steer)
+                    if abs_steer > 0.5:
+                        target_speed = 15.0   # Sharp turn
+                    elif abs_steer > 0.2:
+                        target_speed = 25.0   # Moderate turn
+                    else:
+                        target_speed = self.target_speed  # Straight
+                    
+                    # Throttle/Brake based on speed error
+                    speed_error = target_speed - speed_kmh
+                    if speed_error > 0:
+                        throttle = min(0.8, speed_error / 20.0 + 0.3)
+                        brake = 0.0
+                    else:
+                        throttle = 0.0
+                        brake = min(1.0, -speed_error / 15.0)
+                    
+                    # Smooth controls
+                    self.s_throttle = self.smoothing_alpha * throttle + (1 - self.smoothing_alpha) * self.s_throttle
+                    self.s_brake = self.smoothing_alpha * brake + (1 - self.smoothing_alpha) * self.s_brake
+                    
+                    ctrl = carla.VehicleControl()
+                    ctrl.steer = steer
+                    ctrl.throttle = self.s_throttle
+                    ctrl.brake = self.s_brake
+                    ctrl.hand_brake = False
+                    ctrl.reverse = False
+                    
+                    # ─── SAFETY OVERRIDES ───
                     # Only count stuck if NOT at traffic light
                     if speed_kmh < 0.5 and not at_traffic_light:
                         self.stuck_timer += 1
@@ -517,7 +595,6 @@ class GTAPilot:
                         print("   Car stuck for 15s! Auto-reversing...")
                         self.recovering = True
                         self.recover_start = time.time()
-                        self.vehicle.set_autopilot(False)
                         self.stuck_timer = 0
                     
                     # Radar safety (ignore < 1.5m = self-detection)
@@ -525,41 +602,72 @@ class GTAPilot:
                         ctrl.throttle = 0.0
                         ctrl.brake = 1.0
                         safety_status = "EMERGENCY STOP"
-                        self.vehicle.apply_control(ctrl)
                     elif 3.0 <= self.obstacle_dist < 6.0:
                         ctrl.throttle = min(ctrl.throttle, 0.3)
                         ctrl.brake = max(ctrl.brake, 0.2)
                         safety_status = "CAUTION"
-                        self.vehicle.apply_control(ctrl)
                     
                     if at_traffic_light:
-                        safety_status = "RED LIGHT"
+                        # Respect red lights: stop
+                        tl = self.vehicle.get_traffic_light()
+                        if tl and tl.get_state() == carla.TrafficLightState.Red:
+                            ctrl.throttle = 0.0
+                            ctrl.brake = 1.0
+                            safety_status = "RED LIGHT"
+                    
+                    self.vehicle.apply_control(ctrl)
                 
                 # Check if arrived
-                ego_loc = self.vehicle.get_transform().location
-                dist_to_dest = ego_loc.distance(self.destination_wp.transform.location)
-                
                 if dist_to_dest < 5.0:
+                    ctrl = carla.VehicleControl()
                     ctrl.throttle = 0.0
                     ctrl.brake = 1.0
                     self.vehicle.apply_control(ctrl)
                     print(f"\nARRIVED AT DESTINATION! Distance: {dist_to_dest:.1f}m")
                     
-                    # Show arrived screen
-                    overlay = pygame.Surface((self.WIN_W, self.WIN_H))
-                    overlay.set_alpha(150)
-                    overlay.fill((0, 0, 0))
-                    self.display.blit(overlay, (0, 0))
-                    
-                    done_text = self.big_font.render("ARRIVED! Returning to map...", True, (0, 255, 100))
-                    self.display.blit(done_text, (self.WIN_W // 2 - done_text.get_width() // 2, self.WIN_H // 2))
-                    pygame.display.flip()
-                    
-                    # Ensure Pygame doesn't freeze or lag while sleeping
-                    for _ in range(30):
-                        pygame.event.pump()
-                        time.sleep(0.1)
+                    # ─── ARRIVED SCREEN: Wait for user input ───
+                    arrived = True
+                    while arrived:
+                        # Keep ticking so sensors don't stall
+                        self.world.tick()
                         
+                        for ev in pygame.event.get():
+                            if ev.type == pygame.QUIT:
+                                return False
+                            if ev.type == pygame.KEYDOWN:
+                                if ev.key == pygame.K_RETURN:
+                                    print("Returning to map selection...")
+                                    arrived = False
+                                elif ev.key == pygame.K_ESCAPE:
+                                    return False
+                            if ev.type == pygame.VIDEORESIZE:
+                                self.WIN_W, self.WIN_H = ev.w, ev.h
+                                self.display = pygame.display.set_mode((self.WIN_W, self.WIN_H), pygame.RESIZABLE)
+                        
+                        # Redraw the current camera frame with overlay
+                        if self.current_frame is not None:
+                            rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
+                            cam_surface = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
+                            scaled = pygame.transform.scale(cam_surface, (self.WIN_W, self.WIN_H))
+                            self.display.blit(scaled, (0, 0))
+                        
+                        overlay = pygame.Surface((self.WIN_W, self.WIN_H))
+                        overlay.set_alpha(150)
+                        overlay.fill((0, 0, 0))
+                        self.display.blit(overlay, (0, 0))
+                        
+                        done_text = self.big_font.render("DESTINATION REACHED!", True, (0, 255, 100))
+                        self.display.blit(done_text, (self.WIN_W // 2 - done_text.get_width() // 2, self.WIN_H // 2 - 40))
+                        
+                        sub_text = self.font.render("Press ENTER to return to map  |  ESC to quit", True, (200, 200, 200))
+                        self.display.blit(sub_text, (self.WIN_W // 2 - sub_text.get_width() // 2, self.WIN_H // 2 + 10))
+                        
+                        dist_text = self.font.render(f"Final distance: {dist_to_dest:.1f}m", True, (255, 255, 0))
+                        self.display.blit(dist_text, (self.WIN_W // 2 - dist_text.get_width() // 2, self.WIN_H // 2 + 40))
+                        
+                        pygame.display.flip()
+                        clock.tick(20)
+                    
                     return True
 
                 # Decay radar
@@ -581,7 +689,7 @@ class GTAPilot:
                 ])
 
                 if int(time.time() * 5) % 3 == 0:
-                    print(f"Speed: {speed_kmh:.1f} km/h | Dist: {dist_to_dest:.0f}m | Gap: {self.obstacle_dist:.1f}m | {safety_status}")
+                    print(f"Speed: {speed_kmh:.1f} km/h | Dist: {dist_to_dest:.0f}m | Gap: {self.obstacle_dist:.1f}m | Route: {self._route_index}/{len(self.route)} | {safety_status}")
 
                 clock.tick(20)
         finally:
@@ -594,14 +702,25 @@ class GTAPilot:
         """Load a new CARLA map and rebuild the road network."""
         print(f"\nLoading {town_name}... (this may take a moment)")
 
-        
         self.display.fill((20, 20, 30))
         loading_text = self.big_font.render(f"Loading {town_name}...", True, (255, 255, 255))
         self.display.blit(loading_text, (self.MAP_SIZE // 2 - loading_text.get_width() // 2, self.MAP_SIZE // 2))
         pygame.display.flip()
         
         self.client.load_world(town_name)
-        time.sleep(8)
+        
+        # Wait for the new world to load, while keeping the pygame window responsive
+        load_start = time.time()
+        while time.time() - load_start < 10:
+            pygame.event.pump()  # Prevents OS "not responding" freeze
+            # Redraw loading screen periodically
+            elapsed = time.time() - load_start
+            self.display.fill((20, 20, 30))
+            dots = "." * (int(elapsed) % 4)
+            loading_text = self.big_font.render(f"Loading {town_name}{dots}", True, (255, 255, 255))
+            self.display.blit(loading_text, (self.MAP_SIZE // 2 - loading_text.get_width() // 2, self.MAP_SIZE // 2))
+            pygame.display.flip()
+            time.sleep(0.3)
         
         self.world = self.client.get_world()
         self.carla_map = self.world.get_map()
@@ -696,7 +815,7 @@ class GTAPilot:
         if w == 'Clear':
             self.world.set_weather(carla.WeatherParameters.ClearNoon)
         elif w == 'Rain':
-            self.world.set_weather(carla.WeatherParameters.HeavyRainNoon)
+            self.world.set_weather(carla.WeatherParameters.HardRainNoon)
         elif w == 'Night':
             self.world.set_weather(carla.WeatherParameters.ClearNight)
         elif w == 'Fog':

@@ -1,40 +1,85 @@
-# End-to-End Deep Learning Autonomous Driving for Indian Traffic (CARLA)
+# End-to-End Autonomous Driving Research: CNN vs CNN-LSTM in CARLA
 
-## Core Research Problem
-Developing a fully deep learning-based predictive driving model that operates in complex, semi-structured, rule-flexible traffic environments (simulating Indian traffic) without relying on explicit rule-based components or hand-coded symbolic logic.
+## Research Question
+Can a CNN-LSTM architecture with regularization reduce phantom braking and adverse weather failures compared to a single-frame CNN baseline in CARLA?
 
-## Project Structure
-`src/`
-- `indian_traffic_manager.py` - Custom traffic generator. Simulates high density, lack of lane discipline, bike-centric behavior, wrong-side driving, pedestrian jaywalking, debris, and anti-gridlock mechanisms.
-- `data_collector.py` - Script to log RGB, LiDAR, Ego state, and human/autopilot control actions to create a training dataset.
-- `model.py` - Deep Neural Network architecture (CNN/Transformer for vision + MLP for state -> continuous control actions: throttle, steer, brake).
-- `train.py` - PyTorch training script mapping observations to expert actions (Imitation Learning/Behavioral Cloning).
-- `autonomous_agent.py` - Evaluation script deploying the trained model in CARLA without any hand-crafted rules or waypoints.
+This project directly addresses documented Tesla autopilot failure modes by comparing:
+- **Model A**: Baseline CNN (single frame)
+- **Model B**: CNN-LSTM (temporal sequence)
 
-### Why The Previous Traffic Failed & How We Fixed It:
-1. **Gridlocks (Cars stuck randomly):** We added an `Anti-Gridlock Tracker` that monitors car velocities. If a car is stuck (speed ~ 0) for over 15 seconds, it is teleported or destroyed/respawned to maintain flow.
-2. **Signals Stuck:** We force traffic to ignore traffic lights and stop signs at a high percentage (matching real chaotic junctions), or actively turn traffic lights green/off. We use `tm.ignore_lights_percentage(actor, 90)`.
-3. **Boring/Line behavior:** We force lane changes (`random_left_lanechange_percentage`), gap exploitation (low minimum distance), and specifically spawn bikes that actively ignore lane centers to weave through traffic.
-4. **Debris:** We spawn static props randomly on the road edges.
+Both models are trained on identical data with identical hyperparameters - the only difference is temporal processing capability.
 
-## Guide to Running the Project
+## Quick Start
+```bash
+# Install dependencies
+pip install -r requirements.txt
 
-### Phase 1: Data Collection (Imitation Learning)
-The model needs to learn from an "expert" navigating this chaos. We will use CARLA's built-in autopilot (configured securely, or heavily tweaked) OR human driving mode to collect data.
-1. Start CARLA server.
-2. Run `python src/indian_traffic_manager.py` (Leave it running in the background to keep the environment chaotic).
-3. Run `python src/data_collector.py` to spawn the Ego vehicle and record images and controls to `dataset/`.
+# 1. Collect training data (60,000 frames across 3 weather conditions)
+python src/data_collector.py
 
-### Phase 2: Training the Neural Network
-We train the model to map *Raw Inputs (Camera + Speed)* directly to *Control Actions (Steering, Throttle, Braking)*.
-1. Run `python src/train.py`.
-2. This will save a `best_model.pth`.
+# 2. Train both models separately
+python src/train.py
 
-### Phase 3: Rule-Free Evaluation
-We evaluate the model in the simulator. The vehicle relies purely on the DL model predictions—no A*, no MPC, no behavior trees, no PID controllers for trajectory tracking.
-1. Start CARLA server.
-2. Run `python src/indian_traffic_manager.py`.
-3. Run `python src/autonomous_agent.py` to deploy the purely neural agent. Observe its emergent behavior.
+# 3. Evaluate on reserved towns (Town03, Town05)
+python src/evaluate.py
+
+# 4. Generate attention visualizations
+gradcam
+python src/visualize.py
+
+# 5. Run adversarial scenarios
+tester
+python src/scenario_tester.py
+```
+
+## Folder Structure
+```
+project/
+├── src/
+│   ├── model.py           # Model definitions (CNN vs CNN-LSTM)
+│   ├── train.py           # Training pipeline
+│   ├── data_collector.py  # Data collection from CARLA
+│   ├── evaluate.py        # Model evaluation
+│   ├── visualize.py       # GradCAM visualizations
+│   └── scenario_tester.py  # Adversarial scenario testing
+├── dataset/
+│   ├── images/            # Collected training images
+│   └── log.csv            # Training metadata
+├── models/
+│   ├── baseline_cnn.pth   # Trained CNN model
+│   └── cnn_lstm.pth       # Trained CNN-LSTM model
+├── results/
+│   ├── evaluation_log.csv # Evaluation metrics
+│   ├── scenario_results.csv # Scenario testing results
+│   └── gradcam/           # Attention visualizations
+├── requirements.txt
+└── README.md
+```
+
+## Research Methodology
+- **Training Data**: 60,000 frames from Town01, Town02, Town04 under clear, rainy, foggy conditions.
+- **Model Architectures**: 
+    - **Baseline CNN**: ResNet18 backbone for spatial feature extraction.
+    - **CNN-LSTM**: ResNet18 + 2-layer LSTM for temporal sequence processing (Unit 3).
+- **Bagging Ensemble (Bootstrap Aggregating)**: 
+    - To reduce variance and eliminate "Phantom Braking," each model type is trained as an ensemble of **3 estimators**.
+    - **Bootstrapping**: Each estimator is trained on a random sample of the dataset with replacement, ensuring diverse "viewpoints."
+    - **Aggregation**: During inference, predictions (throttle, steer, brake) are averaged across all ensemble members to produce a stable control signal.
+- **Regularization & Optimization**:
+    - **Early Stopping**: Monitors validation loss with a patience of 7-10 epochs to prevent overfitting (Unit 2).
+    - **Learning Rate Scheduling**: `ReduceLROnPlateau` factor of 0.5 to ensure convergence in local minima.
+    - **Data Augmentation**: Random horizontal flips, color jitter, and Gaussian blur to improve out-of-distribution robustness.
+- **Evaluation**: Town03 and Town05 reserved for testing only.
+- **Metrics**: Route completion, collisions, phantom braking count, lane invasions, average speed.
+
+## Syllabus Coverage
+- **Unit 1**: CNN architecture, convolution, pooling, ResNet18 backbone
+- **Unit 2**: Dropout, data augmentation, noise robustness, early stopping
+- **Unit 3**: LSTM for temporal sequence processing
+- **Unit 4**: Residual connections, batch normalization
+
+## Results
+All evaluation results are saved to `results/` directory for direct inclusion in research papers.
 
 ---
-Let's build!
+*Let's build!*
