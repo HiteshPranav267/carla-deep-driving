@@ -1,0 +1,36 @@
+﻿flowchart TB
+  subgraph A[Baseline CNN single frame]
+    A1[Image x: 3x224x224] --> A2[ResNet18 backbone]
+    A2 --> A3[Image features: 512]
+    A4[Speed scalar: 1] --> A5[Speed MLP]
+    A5 --> A6[Speed features: 64]
+    A3 --> A7[Concat 512+64]
+    A6 --> A7
+    A7 --> A8[BatchNorm1d 576]
+    A8 --> A9[FC 576->256->128->3]
+    A9 --> A10[Outputs: throttle, steer, brake]
+  end
+
+  subgraph B[CNN-LSTM temporal model]
+    B1[Image sequence: 5x3x224x224] --> B2[Per-frame ResNet18]
+    B2 --> B3[Sequence features: 5x512]
+    B3 --> B4[LSTM input 512, hidden 256, 2 layers]
+    B4 --> B5[Last timestep feature: 256]
+    B6[Speed scalar: 1] --> B7[Speed MLP]
+    B7 --> B8[Speed features: 64]
+    B5 --> B9[Concat 256+64]
+    B8 --> B9
+    B9 --> B10[BatchNorm1d 320]
+    B10 --> B11[FC 320->256->128->3]
+    B11 --> B12[Outputs: throttle, steer, brake]
+  end
+
+  subgraph C[Ensemble inference bagging]
+    C1[Member 0 output] --> C4[Average across members]
+    C2[Member 1 output] --> C4
+    C3[Member 2 output] --> C4
+    C4 --> C5[Final control prediction]
+  end
+
+  A10 -.can be ensembled.-> C1
+  B12 -.can be ensembled.-> C1
