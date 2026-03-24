@@ -1,0 +1,23 @@
+{
+  "cnn_gru": {
+    "completed": [
+      0,
+      1,
+      2
+    ]
+  },
+  "gru_only": {
+    "completed": [
+      0,
+      1,
+      2
+    ]
+  },
+  "baseline_cnn": {
+    "completed": [
+      0,
+      1,
+      2
+    ]
+  }
+}

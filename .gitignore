@@ -24,10 +24,9 @@ wheels/
 # Data & Models (Excluded from Git due to size)
 dataset/
 dataset_v2/
-models/
+models/*.pth
 best_model.pth
-*.pth
-*.csv
+dataset_v2/*.csv
 
 # Environments
 .env

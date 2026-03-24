@@ -1242,7 +1242,7 @@ class CarlaEvaluator:
                     frame_tensor = self.eval_transform(self.current_frame)
                     frame_buffer.append(frame_tensor)
 
-                    if model_name == 'cnn_lstm' and len(frame_buffer) < 5:
+                    if model_name in ('cnn_gru', 'gru_only') and len(frame_buffer) < 5:
                         frame_count += 1
                         speed_sum += speed
                         total_distance += float(np.sqrt(
@@ -1253,7 +1253,7 @@ class CarlaEvaluator:
                         speed_normalized = torch.tensor(
                             [[speed / 100.0]], dtype=torch.float32
                         )
-                        if model_name == 'cnn_lstm':
+                        if model_name in ('cnn_gru', 'gru_only'):
                             image_tensor = torch.stack(
                                 list(frame_buffer), dim=0
                             ).unsqueeze(0)
