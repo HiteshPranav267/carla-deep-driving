@@ -1,0 +1,70 @@
+================================================================================
+CARLA DEEP DRIVING - FUTURE ROADMAP & PROJECT EXPANSION
+================================================================================
+
+Deadline: ~2 weeks
+Goal: Expand the paper from a "model comparison" to a "complete autonomous system"
+
+--------------------------------------------------------------------------------
+1. MUST DO (Phase 2): Path-Aware Navigation (Estimated: 3-5 days)
+--------------------------------------------------------------------------------
+Currently, the winning Baseline CNN just follows the lane perfectly, but it 
+doesn't know where it's going at an intersection. 
+
+PLAN: 
+- Update Data Collection: Ask the CARLA route planner for the next command 
+  (0 = Left, 1 = Straight, 2 = Right, 3 = Follow Lane) and save it to the CSV.
+- Update Model: Modify `baseline_cnn` to become `PathAwareCNN`. It will take 
+  the image, the speed, AND the one-hot encoded navigational command.
+- Result: The car can now successfully drive point-to-point on a map without 
+  getting lost at junctions. This is the core requirement for a "full" pipeline.
+
+--------------------------------------------------------------------------------
+2. MUST DO (Phase 3): Multi-Task Learning Head (Estimated: 2-3 days)
+--------------------------------------------------------------------------------
+Right now, the model implicitly learns to brake for red lights, but we can 
+force it to be smarter using a Deep Learning technique called "Auxiliary Loss".
+
+PLAN: 
+- Update the model to output 4 things: [throttle, steer, brake, TL_state].
+- The `TL_state` is a classification output predicting if a light is Red/Green.
+- Why for the paper?: This proves that forcing the CNN to explicitly detect 
+  traffic lights improves overall driving safety and reduces red-light running. 
+  It shows a deep understanding of multi-task network design.
+
+--------------------------------------------------------------------------------
+3. HIGHLY RECOMMENDED: Grad-CAM Visualization (Estimated: 1-2 days)
+--------------------------------------------------------------------------------
+Deep learning models are "black boxes." Teachers/professors hate black boxes. 
+
+PLAN: 
+- Implement a script (`visualize.py`) that applies Grad-CAM to your trained 
+  model while it drives.
+- This will generate a heatmap over the CARLA camera feed showing exactly 
+  *where* the AI is looking (e.g., glowing hot over lane lines, or glowing red 
+  over a car braking in front).
+- Why for the paper?: Screenshots/videos of this guarantee an A+. It is the 
+  ultimate proof that your model isn't just memorizing pixels, but genuinely 
+  understanding the driving scene.
+
+--------------------------------------------------------------------------------
+4. NICE TO HAVE (If time permits): Robustness & Edge Cases (Estimated: 1-2 days)
+--------------------------------------------------------------------------------
+Testing the model in conditions it was never explicitly trained for.
+
+PLAN: 
+- Run standard evaluation in Town05, but change the weather to Nighttime Heavy 
+  Rain (which wasn't in the training set).
+- Measure how much the performance drops. 
+- Why for the paper?: Discussing the limits, failures, and "out-of-distribution" 
+  weaknesses of your model shows profound scientific maturity.
+
+================================================================================
+PROPOSED 2-WEEK TIMELINE:
+================================================================================
+- Days 1-4: Update data collector, gather new "path-aware" dataset (100k frames)
+- Days 5-7: Build and train PathAwareCNN with the multi-task traffic light head
+- Days 8-9: Evaluate the new model in CARLA (point-to-point navigation)
+- Days 10-11: Generate Grad-CAM heatmaps and videos for presentation
+- Days 12-14: Write the final report/presentation fusing Phase 1 (Ablation) and 
+              Phase 2 (Path-Aware) results.
