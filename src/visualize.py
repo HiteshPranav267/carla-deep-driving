@@ -64,7 +64,7 @@ class Visualizer:
         # Loaded as lists so ensemble members can be visualized and averaged.
         self.loaded_models = {
             'baseline_cnn': self._load_model_members('baseline_cnn'),
-            'cnn_lstm': self._load_model_members('cnn_lstm')
+            'cnn_gru': self._load_model_members('cnn_gru')
         }
 
     def _load_model_members(self, model_name):
@@ -231,14 +231,14 @@ class Visualizer:
 
         for cnn_file in cnn_files:
             base_name = cnn_file.replace('_baseline_cnn.png', '')
-            lstm_file = f"{base_name}_cnn_lstm.png"
-            if lstm_file not in files:
+            gru_file = f"{base_name}_cnn_gru.png"
+            if gru_file not in files:
                 continue
 
             cnn_path = os.path.join(self.results_dir, cnn_file)
-            lstm_path = os.path.join(self.results_dir, lstm_file)
+            gru_path = os.path.join(self.results_dir, gru_file)
             cnn_img = Image.open(cnn_path)
-            lstm_img = Image.open(lstm_path)
+            gru_img = Image.open(gru_path)
 
             plt.figure(figsize=(12, 5))
             plt.subplot(1, 2, 1)
@@ -247,8 +247,8 @@ class Visualizer:
             plt.axis('off')
 
             plt.subplot(1, 2, 2)
-            plt.imshow(lstm_img)
-            plt.title('CNN-LSTM')
+            plt.imshow(gru_img)
+            plt.title('CNN-GRU')
             plt.axis('off')
 
             plt.suptitle(f"Attention Comparison | {base_name}")

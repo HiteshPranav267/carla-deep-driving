@@ -1,85 +1,88 @@
-# End-to-End Autonomous Driving Research: CNN vs CNN-LSTM in CARLA
+# End-to-End Autonomous Driving: 3-Model Ablation Study in CARLA
 
 ## Research Question
-Can a CNN-LSTM architecture with regularization reduce phantom braking and adverse weather failures compared to a single-frame CNN baseline in CARLA?
+**Does temporal memory (GRU) improve end-to-end driving, and is a CNN spatial backbone necessary when using temporal processing?**
 
-This project directly addresses documented Tesla autopilot failure modes by comparing:
-- **Model A**: Baseline CNN (single frame)
-- **Model B**: CNN-LSTM (temporal sequence)
+This project performs a strict, controlled 3-model comparison:
+- **Model A**: `baseline_cnn` — ResNet18 on a single frame (spatial only)
+- **Model B**: `cnn_gru` — ResNet18 + GRU on 5-frame sequences (spatial + temporal)
+- **Model C**: `gru_only` — Linear projection + GRU, no CNN backbone (temporal only)
 
-Both models are trained on identical data with identical hyperparameters - the only difference is temporal processing capability.
+All models trained on **identical data, identical hyperparameters** — the only variable is architecture.
+
+## Ablation Logic
+| Comparison | Variable Changed | Insight |
+|-----------|-----------------|---------|
+| A vs B | +GRU on top of CNN | Temporal gain from adding recurrence |
+| B vs C | -CNN backbone | Importance of convolutional spatial features |
 
 ## Quick Start
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# 1. Collect training data (100k+ frames)
+python src/data_collector_v2.py
 
-# 1. Collect training data (60,000 frames across 3 weather conditions)
-python src/data_collector.py
+# 2. Train all 3 models (3 estimators each = 9 models)
+python src/train_v2.py
 
-# 2. Train both models separately
-python src/train.py
-
-# 3. Evaluate on reserved towns (Town03, Town05)
+# 3. Evaluate
 python src/evaluate.py
-
-# 4. Generate attention visualizations
-gradcam
-python src/visualize.py
-
-# 5. Run adversarial scenarios
-tester
-python src/scenario_tester.py
 ```
 
 ## Folder Structure
 ```
 project/
 ├── src/
-│   ├── model.py           # Model definitions (CNN vs CNN-LSTM)
-│   ├── train.py           # Training pipeline
-│   ├── data_collector.py  # Data collection from CARLA
-│   ├── evaluate.py        # Model evaluation
-│   ├── visualize.py       # GradCAM visualizations
-│   └── scenario_tester.py  # Adversarial scenario testing
-├── dataset/
-│   ├── images/            # Collected training images
-│   └── log.csv            # Training metadata
+│   ├── model.py             # 3 architectures: BaselineCNN, CNNGRU, GRUOnly
+│   ├── train_v2.py          # Unified training pipeline (identical settings)
+│   ├── data_collector_v2.py # Data collection from CARLA
+│   └── evaluate.py          # Model evaluation
+├── dataset_v2/
+│   ├── images/              # 100k+ collected training images
+│   └── log.csv              # 27-column metadata
 ├── models/
-│   ├── baseline_cnn.pth   # Trained CNN model
-│   └── cnn_lstm.pth       # Trained CNN-LSTM model
-├── results/
-│   ├── evaluation_log.csv # Evaluation metrics
-│   ├── scenario_results.csv # Scenario testing results
-│   └── gradcam/           # Attention visualizations
-├── requirements.txt
+│   ├── baseline_cnn_member_0..2.pth
+│   ├── cnn_gru_member_0..2.pth
+│   └── gru_only_member_0..2.pth
 └── README.md
 ```
 
-## Research Methodology
-- **Training Data**: 60,000 frames from Town01, Town02, Town04 under clear, rainy, foggy conditions.
-- **Model Architectures**: 
-    - **Baseline CNN**: ResNet18 backbone for spatial feature extraction.
-    - **CNN-LSTM**: ResNet18 + 2-layer LSTM for temporal sequence processing (Unit 3).
-- **Bagging Ensemble (Bootstrap Aggregating)**: 
-    - To reduce variance and eliminate "Phantom Braking," each model type is trained as an ensemble of **3 estimators**.
-    - **Bootstrapping**: Each estimator is trained on a random sample of the dataset with replacement, ensuring diverse "viewpoints."
-    - **Aggregation**: During inference, predictions (throttle, steer, brake) are averaged across all ensemble members to produce a stable control signal.
-- **Regularization & Optimization**:
-    - **Early Stopping**: Monitors validation loss with a patience of 7-10 epochs to prevent overfitting (Unit 2).
-    - **Learning Rate Scheduling**: `ReduceLROnPlateau` factor of 0.5 to ensure convergence in local minima.
-    - **Data Augmentation**: Random horizontal flips, color jitter, and Gaussian blur to improve out-of-distribution robustness.
-- **Evaluation**: Town03 and Town05 reserved for testing only.
-- **Metrics**: Route completion, collisions, phantom braking count, lane invasions, average speed.
+## Model Architectures
+| Model | Architecture | Params | Input |
+|-------|-------------|--------|-------|
+| `baseline_cnn` | ResNet18 → FC + Speed MLP | ~11.2M | Single frame |
+| `cnn_gru` | ResNet18 → 2-layer GRU + Speed MLP | ~13.5M | 5-frame sequence |
+| `gru_only` | Flatten→Linear → 2-layer GRU + Speed MLP | ~77.5M | 5-frame sequence |
 
-## Syllabus Coverage
-- **Unit 1**: CNN architecture, convolution, pooling, ResNet18 backbone
-- **Unit 2**: Dropout, data augmentation, noise robustness, early stopping
-- **Unit 3**: LSTM for temporal sequence processing
-- **Unit 4**: Residual connections, batch normalization
+## Training Protocol (Identical for All Models)
+- **Optimizer**: Adam (lr=1e-4, weight_decay=1e-5)
+- **Loss**: MSE on [throttle, steer, brake]
+- **Scheduler**: ReduceLROnPlateau (factor=0.5, patience=4)
+- **Early Stopping**: patience=7 on validation loss
+- **Augmentation**: HorizontalFlip, ColorJitter, GaussianBlur, RandomAffine
+- **Bagging**: 3 bootstrap-sampled estimators per model
+- **Split**: 85% train / 15% val (fixed seed=42)
+- **Gradient Clipping**: max_norm=1.0
+- **Batch Size**: 32 (16 for gru_only due to memory)
+
+## Deep Learning Concepts Covered
+- **Unit 1**: CNN (ResNet18), convolution, pooling, feature extraction
+- **Unit 2**: Dropout, data augmentation, early stopping, bagging
+- **Unit 3**: GRU for temporal sequence processing (vs LSTM trade-offs)
+- **Unit 4**: Residual connections, batch normalization, ablation methodology
+
+## Pausable Training
+```bash
+# Create flag to pause after current epoch
+echo > STOP_TRAINING.flag
+
+# Delete flag and rerun to resume
+del STOP_TRAINING.flag
+python src/train_v2.py
+```
 
 ## Results
-All evaluation results are saved to `results/` directory for direct inclusion in research papers.
+Training logs saved to `models/training_log.json` for loss curve analysis.
+All evaluation results saved to `results/` directory.
 
 ---
-*Let's build!*
+*Controlled experiment. No confounding variables. Teacher-review ready.*

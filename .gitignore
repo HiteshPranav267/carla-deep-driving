@@ -23,6 +23,7 @@ wheels/
 
 # Data & Models (Excluded from Git due to size)
 dataset/
+dataset_v2/
 models/
 best_model.pth
 *.pth
